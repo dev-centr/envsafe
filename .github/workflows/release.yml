@@ -85,7 +85,7 @@ jobs:
           test "$(command -v envsafe)" = /usr/bin/envsafe
           envsafe --version
           sudo dpkg -r envsafe
-          ! command -v envsafe
+          test ! -e /usr/bin/envsafe
       - name: Build universal binary and .pkg
         if: runner.os == 'macOS'
         run: |

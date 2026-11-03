@@ -1,8 +1,8 @@
 = 2026-11-02
 
-== Installer packages, v0.2.1
+== Installer packages, v0.2.2
 
-Packaging only; the binary behaves the same as v0.2.0.
+Packaging only; the binary behaves the same as v0.2.0. The v0.2.1 tag exists but has no release: its `.deb` smoke test failed on a stale shell path cache after removal, and tags are never moved.
 
 * *macOS:* `brew install dev-centr/tap/envsafe` from the new formula in https://github.com/dev-centr/homebrew-tap[dev-centr/homebrew-tap], or a `.pkg` installer that puts `envsafe` in `/usr/local/bin`. The `.pkg` holds a universal binary when the Intel slice cross-compiles on the arm64 runner. That slice is untested on Intel hardware, and the `.pkg` is not signed or notarized.
 * *Linux:* `.deb` and `.rpm` packages for x64 and arm64 (built with nfpm; binary in `/usr/bin`). CI installs and removes the `.deb` on both architectures.

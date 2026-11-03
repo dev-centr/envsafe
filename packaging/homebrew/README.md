@@ -15,7 +15,7 @@ repository secret `HOMEBREW_TAP_TOKEN` is set. That secret should hold a fine-gr
 From a clone of this repo, after the release is published:
 
 ```sh
-v=0.2.1
+v=0.2.2
 gh release download "v$v" -R dev-centr/envsafe -p SHA256SUMS.txt -D /tmp/envsafe-$v
 bash packaging/homebrew/render-formula.sh "$v" /tmp/envsafe-$v/SHA256SUMS.txt > ../homebrew-tap/Formula/envsafe.rb
 cd ../homebrew-tap && git add Formula/envsafe.rb && git commit -m "envsafe $v" && git push
