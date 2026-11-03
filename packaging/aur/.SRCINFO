@@ -1,0 +1,17 @@
+pkgbase = envsafe-bin
+	pkgdesc = Secret-safe .env editing for people and AI agents
+	pkgver = 0.2.2
+	pkgrel = 1
+	url = https://github.com/dev-centr/envsafe
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = glibc
+	provides = envsafe
+	conflicts = envsafe
+	source_x86_64 = https://github.com/dev-centr/envsafe/releases/download/v0.2.2/envsafe-0.2.2-linux-x64.tar.gz
+	sha256sums_x86_64 = 44918ea2c58dd2e684f19778e606fe273a8812fe46c1611693721374b6912861
+	source_aarch64 = https://github.com/dev-centr/envsafe/releases/download/v0.2.2/envsafe-0.2.2-linux-arm64.tar.gz
+	sha256sums_aarch64 = 52dd3d296b867dd33930cd31610123dcdff85fab9090e39ad9ad1e0288a3a12e
+
+pkgname = envsafe-bin

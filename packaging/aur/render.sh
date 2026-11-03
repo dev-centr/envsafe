@@ -56,6 +56,7 @@ pkgbase = envsafe-bin
 pkgname = envsafe-bin
 SRC
 
+mkdir -p "$here/nix"
 cat > "$here/nix/sources.json" <<JSON
 {
   "version": "$v",
