@@ -25,6 +25,8 @@
 - [Why](#why)
 - [Install](#install)
 - [Usage](#usage)
+- [Comments and placement](#comments-and-placement)
+- [MCP server](#mcp-server)
 - [Schema files](#schema-files)
 - [Library use](#library-use)
 - [Built with](#built-with)
@@ -69,14 +71,66 @@ envsafe validate --schema docs/environment-variables.adoc --strict
 
 | Command | What it does |
 | --- | --- |
-| `set KEY --stdin \| --from-env NAME` | Updates every occurrence of `KEY` (keeping its quote style when possible) or appends it. One trailing newline from stdin is dropped. `--export` prefixes a new key with `export `. |
-| `unset KEY...` | Removes every occurrence of each key. |
-| `list` | Key names in file order. `--show-masked` adds a masked marker; `--json` gives `{key, line, hasValue}`. |
+| `set KEY --stdin \| --from-env NAME` | Upsert: updates every occurrence of `KEY` in place (keeping its quote style and inline comment) or adds it. `--only-existing` fails if the key is missing; `--only-new` fails if it exists and never overwrites. One trailing newline from stdin is dropped. `--export` prefixes a new key with `export `. Dry runs say *would add* or *would update*. |
+| `unset KEY...` | Removes every occurrence of each key. The comment block above it stays unless `--with-comment`. |
+| `list` | Key names in file order, each with its attached and inline comment. `--show-masked` adds a masked marker; `--json` gives `{key, line, hasValue, comment, inlineComment}`. |
+| `mcp` | Runs an MCP server over stdio (see below). |
 | `validate` | Syntax errors, duplicate keys, and (with `--schema`) unknown, missing or empty required keys. `--strict` makes unknown keys errors. |
 
 Common options: `-f, --file PATH` (default `.env`), `--dry-run`, `--backup`, `--json`, `-v, --verbose`, `--version`, `--help`.
 
 Exit codes: `0` ok, `1` validation failed, `2` usage error, `3` file error.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Comments and placement
+
+Comments are for humans and are never treated as secret. Every full-line comment, inline comment (`KEY=val # note`), blank line and section header is kept byte-for-byte. The comment lines directly above a key (no blank line between) are that key's *attached comment*.
+
+```sh
+# add or replace the attached comment
+printf '%s' "$TOKEN" | envsafe set GITHUB_TOKEN --stdin --comment "Fine-grained PAT, repo read only"
+# place a new key after another key, or at the end of a section
+printf '%s' "$V" | envsafe set SMTP_PASS --stdin --after SMTP_USER
+printf '%s' "$V" | envsafe set SMTP_PASS --stdin --section "# == Mail =="
+# remove a key together with its attached comment
+envsafe unset OLD_KEY --with-comment
+```
+
+`--section` matches a comment line exactly; a new key goes after the last line of that section (the section ends at a blank line followed by another comment). If the header is missing it is created at the end of the file. envsafe refuses a `--comment` that contains the value being set.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## MCP server
+
+`envsafe mcp` speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio, so agents can call it as tools:
+
+| Tool | Arguments |
+| --- | --- |
+| `envsafe_set` | `key`, exactly one of `from_env` (name of an environment variable visible to the server) or `from_file` (path whose contents are the value); optional `file`, `only_existing`, `only_new`, `comment`, `after`, `section`, `export`, `dry_run`, `backup` |
+| `envsafe_unset` | `keys`, optional `file`, `with_comment`, `dry_run`, `backup` |
+| `envsafe_list` | optional `file`, `show_masked` |
+| `envsafe_validate` | optional `file`, `schema`, `strict` |
+
+There is no inline `value` argument: tool arguments pass through the model's context, so values must come from the server's environment or a file. Responses never contain values; `dry_run` returns the redacted diff. Relative `file` paths resolve against the server's working directory, so prefer absolute paths.
+
+**Cursor** (`~/.cursor/mcp.json` or the project's `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "envsafe": { "command": "envsafe", "args": ["mcp"] }
+  }
+}
+```
+
+**Claude Code:**
+
+```sh
+claude mcp add envsafe -- envsafe mcp
+```
+
+**Grok Bot and other MCP clients:** add a custom stdio server with command `envsafe` and arguments `mcp` (same shape as the Cursor JSON above). To hand the server a secret, set it in the server's `env` block or point `from_file` at a file the client writes.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 

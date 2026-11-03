@@ -1,0 +1,9 @@
+= 2026-11-02
+
+== MCP server, comments and upsert flags, v0.2.0
+
+* *MCP server:* `envsafe mcp` serves newline-delimited JSON-RPC 2.0 over stdio. Tools: `envsafe_set`, `envsafe_unset`, `envsafe_list`, `envsafe_validate`. Each call runs the same code path as the CLI, so output stays redacted. `envsafe_set` has no inline value argument; it reads `from_env` (server environment) or `from_file`.
+* *Attached comments:* the comment lines directly above a key belong to it. `set --comment TEXT` adds or replaces them, `unset --with-comment` removes them (default keeps them), and `list` shows them next to each key along with any inline comment. A comment that contains the value being set is refused.
+* *Placement:* new keys go after `--after KEY`, or at the end of the section headed by `--section "# Header"` (created at the end of the file if missing).
+* *Upsert flags:* `set` updates in place or adds; `--only-existing` fails when the key is missing and `--only-new` fails when it exists. Dry-run diffs say *would add*, *would update*, or *would remove*.
+* *Release:* the stray `.wixpdb` debug file is no longer attached to releases.

@@ -4,6 +4,13 @@
 
 == 2026-11-02
 
+=== MCP server, comments and upsert flags, v0.2.0
+* `envsafe mcp`: an MCP server over stdio with `envsafe_set`, `envsafe_unset`, `envsafe_list` and `envsafe_validate`; values come from `from_env` or `from_file`, never inline.
+* Attached comments: `set --comment`, `unset --with-comment`, and `list` shows each key's comments.
+* New keys can be placed with `--after KEY` or `--section "# Header"`.
+* `set` is an explicit upsert; `--only-existing` and `--only-new` make it strict. Dry runs say *would add* or *would update*.
+* Details: link:changelog-details/2026-11-02%20-%20mcp-server-and-comments.adoc[2026-11-02 - MCP server, comments and upsert flags]
+
 === First release, v0.1.0
 * `set` (value from `--stdin` or `--from-env`), `unset`, `list`, and `validate` commands.
 * Lossless editing: comments, blank lines, order, quoting, `export` prefixes, and CRLF/LF endings survive edits.
