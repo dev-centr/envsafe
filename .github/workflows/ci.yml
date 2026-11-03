@@ -27,3 +27,6 @@ jobs:
       - name: Smoke test (secret pipe)
         shell: bash
         run: tests/smoke.sh ./bin/envsafe
+      - name: MCP smoke test
+        shell: bash
+        run: tests/mcp-smoke.sh ./bin/envsafe
