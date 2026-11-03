@@ -1,0 +1,18 @@
+name "envsafe"
+description "Edit .env files safely from scripts and AI agents: values come from pipes, never argv or output."
+authors "Ryan Johnson"
+copyright "Copyright (c) 2026 Dev-Centr"
+license "MIT"
+homepage "https://github.com/dev-centr/envsafe"
+targetPath "bin"
+stringImportPaths "views"
+
+configuration "application" {
+	targetType "executable"
+	mainSourceFile "source/app.d"
+}
+
+configuration "library" {
+	targetType "library"
+	excludedSourceFiles "source/app.d"
+}

@@ -1,0 +1,18 @@
+# allow-list
+*
+!*/
+!.gitignore
+!.gitattributes
+!.editorconfig
+!AGENTS.md
+!README.md
+!LICENSE
+!CHANGELOG.adoc
+!dub.sdl
+!dub.selections.json
+!source/**/*.d
+!views/build-id.txt
+!tests/*.sh
+!installer/*.wxs
+!changelog-details/**/*.adoc
+!.github/**/*.yml
