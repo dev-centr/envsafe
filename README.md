@@ -51,6 +51,8 @@ Agents and scripts often need to add or rotate a key in a `.env` file. The usual
 - **Debian / Ubuntu:** download `envsafe_<version>_amd64.deb` (or `_arm64.deb`) and run `sudo apt install ./envsafe_<version>_amd64.deb`.
 - **Fedora / RHEL / openSUSE:** download `envsafe-<version>-1.x86_64.rpm` (or `.aarch64.rpm`) and run `sudo dnf install ./envsafe-<version>-1.x86_64.rpm`.
 - **Windows:** download `envsafe-<version>-windows-x64.msi` from [Releases](https://github.com/dev-centr/envsafe/releases) and run it. It installs to `Program Files\envsafe` and adds that folder to PATH (open a new terminal afterwards).
+- **Nix:** `nix run github:dev-centr/envsafe` or `nix profile install github:dev-centr/envsafe`.
+- **Arch Linux:** `packaging/aur/PKGBUILD` builds `envsafe-bin` from the release tarballs (`makepkg -si`). It is not on the AUR yet; see `packaging/aur/README.md`.
 - **Packagers:** each release also carries the bare binary as `.tar.gz` (Linux x64/arm64, macOS) and `.zip` (Windows), plus `SHA256SUMS.txt`.
 - **From source:** install [LDC](https://github.com/ldc-developers/ldc) and run `dub build -b release` (binary in `bin/`).
 

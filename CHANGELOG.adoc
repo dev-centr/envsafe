@@ -8,6 +8,7 @@
 * v0.2.1 was tagged but never published: the post-removal check in the `.deb` smoke test failed. v0.2.2 is the same packaging with that check fixed.
 * macOS: Homebrew formula (`brew install dev-centr/tap/envsafe`) and an unsigned `.pkg` installer.
 * Linux: `.deb` and `.rpm` for x64 and arm64; archives kept for packagers.
+* Arch `envsafe-bin` PKGBUILD and a Nix flake (`nix run github:dev-centr/envsafe`), both refreshed from release checksums on each tag. No Snap or Flatpak.
 * Details: link:changelog-details/2026-11-02%20-%20packages.adoc[2026-11-02 - Installer packages]
 
 === MCP server, comments and upsert flags, v0.2.0

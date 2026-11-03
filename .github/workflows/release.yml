@@ -134,6 +134,18 @@ jobs:
             - **Windows:** run the `.msi` (adds `envsafe` to PATH; open a new terminal afterwards). The MSI is not code-signed.
             - **Packagers:** the `.tar.gz` / `.zip` archives hold the bare binary; `SHA256SUMS.txt` covers every asset.
           files: dist/*
+      - name: Update AUR PKGBUILD and Nix sources on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          git fetch -q origin main
+          git checkout -q -B main origin/main
+          bash packaging/aur/render.sh "$v" dist/SHA256SUMS.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/aur/PKGBUILD packaging/aur/.SRCINFO packaging/nix/sources.json
+          git diff --cached --quiet || { git commit -m "packaging: AUR and Nix sums for v$v"; git push origin main; }
       - name: Bump Homebrew tap
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

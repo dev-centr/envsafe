@@ -19,3 +19,7 @@
 !packaging/**/*.sh
 !packaging/**/*.yaml
 !packaging/**/*.md
+!packaging/**/PKGBUILD
+!packaging/**/.SRCINFO
+!packaging/**/*.json
+!flake.nix
