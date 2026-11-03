@@ -10,7 +10,9 @@ import envsafe.fileio;
 import envsafe.version_;
 import std.array : appender;
 import std.conv : to;
-import std.string : startsWith, endsWith, join;
+import std.string : startsWith, endsWith;
+import std.array : join;
+import std.algorithm : canFind;
 import std.format : format;
 
 enum Exit { ok = 0, invalid = 1, usage = 2, io = 3 }
@@ -27,7 +29,8 @@ private struct Opts
 {
     string file = ".env";
     bool dryRun, backup, json, verbose, showMasked, stdin_, strict, exportPrefix;
-    string fromEnv, schema;
+    string fromEnv, schema, comment, after, section;
+    bool hasComment, withComment, onlyExisting, onlyNew;
     string[] positional;
     bool help, version_;
 }
@@ -37,9 +40,10 @@ immutable usageText = `envsafe - edit .env files without exposing secret values
 Usage:
   <producer> | envsafe set KEY --stdin [options]
   envsafe set KEY --from-env NAME [options]
-  envsafe unset KEY [KEY...] [options]
+  envsafe unset KEY [KEY...] [--with-comment] [options]
   envsafe list [--show-masked] [--json] [options]
   envsafe validate [--schema PATH] [--strict] [--json] [options]
+  envsafe mcp          (MCP server over stdio for AI agents)
   envsafe --version | --help
 
 Options:
@@ -47,6 +51,13 @@ Options:
   --stdin             read the value from standard input (one trailing newline is dropped)
   --from-env NAME     read the value from environment variable NAME
   --export            prefix a newly added key with 'export '
+  --only-existing     set: fail if KEY is missing (update only)
+  --only-new          set: fail if KEY exists (never overwrite)
+  --comment TEXT      set: add or replace the comment block attached above KEY
+  --after KEY2        set: place a new KEY after KEY2
+  --section HEADER    set: place a new KEY at the end of the section headed by
+                      the comment line HEADER (created at the end if missing)
+  --with-comment      unset: also remove the comment block attached above KEY
   --dry-run           print a redacted diff; do not write
   --backup            keep the previous file as PATH.bak
   --show-masked       list: show whether each key has a value, masked
@@ -55,6 +66,8 @@ Options:
   --json              machine-readable output
   -v, --verbose       extra detail (never values)
 
+set is an upsert: it updates KEY in place, or adds it if missing.
+Comments are kept byte-for-byte; list shows each key's attached comment.
 Values are never accepted as command-line arguments and never printed.
 Exit codes: 0 ok, 1 validation failed, 2 usage error, 3 file error.
 `;
@@ -96,6 +109,12 @@ private bool parseOpts(string[] args, ref Opts o, ref string bad)
             case "-f", "--file": o.file = need(); if (o.file is null) return false; break;
             case "--from-env": o.fromEnv = need(); if (o.fromEnv is null) return false; break;
             case "--schema": o.schema = need(); if (o.schema is null) return false; break;
+            case "--comment": o.comment = need(); if (o.comment is null) return false; o.hasComment = true; break;
+            case "--after": o.after = need(); if (o.after is null) return false; break;
+            case "--section": o.section = need(); if (o.section is null) return false; break;
+            case "--with-comment": o.withComment = true; break;
+            case "--only-existing": o.onlyExisting = true; break;
+            case "--only-new": o.onlyNew = true; break;
             case "--stdin": o.stdin_ = true; break;
             case "--dry-run": o.dryRun = true; break;
             case "--backup": o.backup = true; break;
@@ -143,6 +162,9 @@ int run(string[] args, Io io)
         case "unset": return cmdUnset(o, io);
         case "list": return cmdList(o, io);
         case "validate": return cmdValidate(o, io);
+        case "mcp":
+            import envsafe.mcp : serve;
+            return serve(io.getEnv);
         default:
             io.err("error: unknown command (try --help)\n");
             return Exit.usage;
@@ -197,13 +219,16 @@ private void printDiff(const ref Opts o, Io io, const Change[] ch, const ref Doc
         final switch (c.op)
         {
             case Change.Op.modified:
-                a.put(format("@@ line %s @@\n-%s=<redacted>\n+%s=<redacted>\n", c.lineNo, c.key, c.key));
+                a.put(format("@@ line %s: would update %s @@\n-%s=<redacted>\n+%s=<redacted>\n", c.lineNo, c.key, c.key, c.key));
                 break;
             case Change.Op.added:
-                a.put(format("@@ line %s (new) @@\n+%s=<redacted>\n", c.lineNo, c.key));
+                a.put(format("@@ line %s: would add %s @@\n+%s=<redacted>\n", c.lineNo, c.key, c.key));
                 break;
             case Change.Op.removed:
-                a.put(format("@@ line %s @@\n-%s=<redacted>\n", c.lineNo, c.key));
+                a.put(format("@@ line %s: would remove %s @@\n-%s=<redacted>\n", c.lineNo, c.key, c.key));
+                break;
+            case Change.Op.commented:
+                a.put(format("@@ line %s: would set comment above %s @@\n", c.lineNo, c.key));
                 break;
         }
     }
@@ -242,6 +267,11 @@ private int write(const ref Opts o, Io io, ref Document before, ref Document d, 
 
 private int cmdSet(ref Opts o, Io io)
 {
+    if (o.onlyExisting && o.onlyNew)
+    {
+        io.err("error: --only-existing and --only-new cannot be combined\n");
+        return Exit.usage;
+    }
     if (o.positional.length == 0)
     {
         io.err("error: set needs KEY\n");
@@ -279,13 +309,36 @@ private int cmdSet(ref Opts o, Io io)
             return Exit.usage;
         }
     }
+    if (o.hasComment && value.length && o.comment.canFind(value))
+    {
+        io.err("error: refusing a comment that contains the value\n");
+        return Exit.usage;
+    }
     Document d;
     if (!load(o, io, false, d))
         return Exit.io;
+    auto exists_ = d.find(key).length > 0;
+    if (o.onlyExisting && !exists_)
+    {
+        io.err("error: key not present (--only-existing): " ~ key ~ "\n");
+        return Exit.invalid;
+    }
+    if (o.onlyNew && exists_)
+    {
+        io.err("error: key already present (--only-new): " ~ key ~ "\n");
+        return Exit.invalid;
+    }
+    if (o.after.length && !d.find(o.after).length)
+    {
+        io.err("error: --after key not found: " ~ o.after ~ "\n");
+        return Exit.usage;
+    }
     auto before = d;
     before.lines = d.lines.dup;
-    auto ch = setValue(d, key, value, o.exportPrefix);
-    return write(o, io, before, d, ch, ch.length && ch[0].op == Change.Op.added ? "added" : "updated");
+    auto ch = setValue(d, key, value, o.exportPrefix, Placement(o.after, o.section));
+    if (o.hasComment)
+        ch ~= setComment(d, key, o.comment);
+    return write(o, io, before, d, ch, exists_ ? "updated" : "added");
 }
 
 private int cmdUnset(ref Opts o, Io io)
@@ -308,7 +361,7 @@ private int cmdUnset(ref Opts o, Io io)
             io.err("error: invalid key name\n");
             return Exit.usage;
         }
-        ch ~= unsetKey(d, k);
+        ch ~= unsetKey(d, k, o.withComment);
     }
     return write(o, io, before, d, ch, "removed");
 }
@@ -322,22 +375,28 @@ private int cmdList(ref Opts o, Io io)
     if (o.json)
     {
         string[] items;
-        foreach (ref l; d.lines)
+        foreach (i, ref l; d.lines)
             if (l.kind == Kind.entry)
-                items ~= format(`{"key":%s,"line":%s,"hasValue":%s}`, jsonStr(l.key), l.lineNo,
-                    decodeValue(l).length > 0);
+            {
+                auto ic = inlineComment(l);
+                items ~= format(`{"key":%s,"line":%s,"hasValue":%s,"comment":%s,"inlineComment":%s}`,
+                    jsonStr(l.key), l.lineNo, decodeValue(l).length > 0,
+                    jsonStr(attachedComment(d, i).join("\n")), ic is null ? "null" : jsonStr(ic));
+            }
         a.put(format(`{"file":%s,"keys":[%s]}`, jsonStr(o.file), items.join(",")) ~ "\n");
     }
     else
     {
-        foreach (ref l; d.lines)
+        foreach (i, ref l; d.lines)
         {
             if (l.kind != Kind.entry)
                 continue;
-            if (o.showMasked)
-                a.put(l.key ~ "=" ~ (decodeValue(l).length ? "********" : "") ~ "\n");
-            else
-                a.put(l.key ~ "\n");
+            string line = o.showMasked ? l.key ~ "=" ~ (decodeValue(l).length ? "********" : "") : l.key;
+            string[] notes = attachedComment(d, i);
+            if (auto ic = inlineComment(l)) notes ~= ic;
+            if (notes.length)
+                line ~= "  # " ~ notes.join(" / ");
+            a.put(line ~ "\n");
         }
     }
     io.out_(a.data);
@@ -473,4 +532,35 @@ unittest // dry run does not write; exit codes
     assert(run(["list", "-f", buildPath(dir, "missing")], c.io()) == Exit.io);
     assert(run(["set", "B", "-f", f], c.io()) == Exit.usage);
     assert(!exists(f ~ ".bak"));
+}
+
+unittest // upsert by default; --only-existing / --only-new; dry-run wording
+{
+    auto dir = scratchDir("upsert");
+    scope (exit) rmdirRecurse(dir);
+    auto f = buildPath(dir, ".env");
+    fwrite(f, "# == App ==\nA=1 # inline\n\n# == Mail ==\nM=1\n");
+    Capture c;
+    c.stdin_ = "2";
+    assert(run(["set", "A", "--stdin", "-f", f, "--dry-run"], c.io()) == Exit.ok);
+    assert(c.outText.canFind("would update A"));
+    assert(run(["set", "NEW", "--stdin", "-f", f, "--dry-run"], c.io()) == Exit.ok);
+    assert(c.outText.canFind("would add NEW"));
+    assert(run(["set", "NEW", "--stdin", "-f", f, "--only-existing"], c.io()) == Exit.invalid);
+    assert(run(["set", "A", "--stdin", "-f", f, "--only-new"], c.io()) == Exit.invalid);
+    assert(readText(f) == "# == App ==\nA=1 # inline\n\n# == Mail ==\nM=1\n");
+    assert(run(["set", "A", "--stdin", "-f", f, "--only-existing"], c.io()) == Exit.ok);
+    assert(run(["set", "B", "--stdin", "-f", f, "--only-new", "--section", "# == App ==",
+        "--comment", "bee"], c.io()) == Exit.ok);
+    assert(readText(f) == "# == App ==\nA=2 # inline\n# bee\nB=2\n\n# == Mail ==\nM=1\n", readText(f));
+    c.outText = null;
+    assert(run(["list", "-f", f], c.io()) == Exit.ok);
+    assert(c.outText == "A  # == App == / inline\nB  # bee\nM  # == Mail ==\n", c.outText);
+    assert(run(["unset", "B", "-f", f, "--with-comment"], c.io()) == Exit.ok);
+    assert(readText(f) == "# == App ==\nA=2 # inline\n\n# == Mail ==\nM=1\n");
+    // a comment may not carry the secret
+    c.stdin_ = "topsecretvalue";
+    c.errText = null;
+    assert(run(["set", "A", "--stdin", "-f", f, "--comment", "x topsecretvalue"], c.io()) == Exit.usage);
+    assert(!c.errText.canFind("topsecretvalue"));
 }

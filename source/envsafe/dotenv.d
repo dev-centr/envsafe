@@ -10,7 +10,7 @@ module envsafe.dotenv;
 import std.algorithm : canFind, all;
 import std.array : appender;
 import std.ascii : isAlpha, isDigit, isAlphaNum;
-import std.string : startsWith, endsWith, indexOf, strip, toLower;
+import std.string : startsWith, endsWith, indexOf, strip, toLower, splitLines;
 
 enum Kind { blank, comment, entry, invalid }
 
@@ -316,14 +316,119 @@ private char quoteStyle(string raw)
 
 struct Change
 {
-    enum Op { modified, added, removed }
+    enum Op { modified, added, removed, commented }
     Op op;
     string key;
     size_t lineNo;
 }
 
-/// Set KEY to value on every occurrence, or append a new entry. Returns changes.
-Change[] setValue(ref Document d, string key, string value, bool exportPrefix = false)
+
+/// Where a new key goes when `setValue` has to add it.
+struct Placement
+{
+    string afterKey;  /// insert after the last occurrence of this key
+    string section;   /// insert at the end of the section headed by this comment line
+}
+
+/// Recompute 1-based physical line numbers.
+void renumber(ref Document d)
+{
+    size_t phys = 1;
+    foreach (ref l; d.lines)
+    {
+        l.lineNo = phys;
+        phys += 1 + l.text.count('\n');
+    }
+}
+
+/// Index range [start, idx) of the comment block directly above line idx
+/// (contiguous comment lines, no blank line in between).
+size_t attachedStart(const ref Document d, size_t idx)
+{
+    size_t s = idx;
+    while (s > 0 && d.lines[s - 1].kind == Kind.comment)
+        s--;
+    // a block that is the file's or a section's first comment and is followed by a
+    // blank line belongs to the section, not the key; contiguity already excludes it
+    return s;
+}
+
+/// Attached comment text for line idx, with leading `#` and one space removed.
+string[] attachedComment(const ref Document d, size_t idx)
+{
+    string[] r;
+    foreach (i; attachedStart(d, idx) .. idx)
+    {
+        auto t = d.lines[i].text.strip;
+        t = t[1 .. $];
+        if (t.length && t[0] == ' ') t = t[1 .. $];
+        r ~= t;
+    }
+    return r;
+}
+
+/// Inline comment of an entry (text after `#`), or null.
+string inlineComment(const ref Line l)
+{
+    auto t = l.tail.strip;
+    if (!t.length) return null;
+    t = t[1 .. $];
+    return t.length && t[0] == ' ' ? t[1 .. $] : t;
+}
+
+private Line commentLine(string text, string eol)
+{
+    Line l;
+    l.kind = Kind.comment;
+    l.text = text.length ? "# " ~ text : "#";
+    l.eol = eol;
+    return l;
+}
+
+private Line[] commentLines(string text, string eol)
+{
+    Line[] r;
+    foreach (part; text.splitLines)
+        r ~= commentLine(part, eol);
+    if (!r.length) r ~= commentLine("", eol);
+    return r;
+}
+
+/// Insert lines at position pos, keeping the file's final-newline state.
+private void insertAt(ref Document d, size_t pos, Line[] ins)
+{
+    if (!ins.length) return;
+    if (pos == d.lines.length && d.lines.length && d.lines[$ - 1].eol == "")
+    {
+        d.lines[$ - 1].eol = d.defaultEol;
+        ins[$ - 1].eol = "";
+    }
+    d.lines = d.lines[0 .. pos] ~ ins ~ d.lines[pos .. $];
+}
+
+private size_t sectionEnd(const ref Document d, size_t header)
+{
+    // the section runs until a blank line followed by another comment (next header), or EOF
+    size_t last = header;
+    for (size_t i = header + 1; i < d.lines.length; i++)
+    {
+        if (d.lines[i].kind == Kind.blank)
+        {
+            size_t j = i;
+            while (j < d.lines.length && d.lines[j].kind == Kind.blank) j++;
+            if (j >= d.lines.length || d.lines[j].kind == Kind.comment)
+                break;
+            continue;
+        }
+        last = i;
+    }
+    return last + 1;
+}
+
+/// Set KEY to value on every occurrence, or add a new entry. Returns changes.
+/// Untouched lines, including inline comments on the edited line, stay byte-identical.
+Change[] setValue(ref Document d, string key, string value, bool exportPrefix = false,
+    Placement where = Placement.init)
 {
     assert(isValidKey(key));
     Change[] ch;
@@ -346,19 +451,65 @@ Change[] setValue(ref Document d, string key, string value, bool exportPrefix = 
     n.sep = "=";
     n.rawValue = encodeValue(value, 0);
     n.text = n.lead ~ n.key ~ n.sep ~ n.rawValue;
-    if (d.lines.length && d.lines[$ - 1].eol == "")
+    n.eol = d.defaultEol;
+    size_t pos = d.lines.length;
+    Line[] ins = [n];
+    if (where.afterKey.length)
     {
-        d.lines[$ - 1].eol = d.defaultEol;
-        n.eol = "";
+        auto f = d.find(where.afterKey);
+        if (!f.length)
+            throw new Exception("--after key not found");
+        pos = f[$ - 1] + 1;
     }
-    else
-        n.eol = d.defaultEol;
-    size_t phys = 0;
+    else if (where.section.length)
+    {
+        ptrdiff_t h = -1;
+        foreach (i, ref l; d.lines)
+            if (l.kind == Kind.comment && l.text.strip == where.section.strip) { h = i; break; }
+        if (h >= 0)
+            pos = sectionEnd(d, h);
+        else
+        {
+            Line[] pre;
+            if (d.lines.length && d.lines[$ - 1].kind != Kind.blank)
+            {
+                Line b; b.kind = Kind.blank; b.eol = d.defaultEol;
+                pre ~= b;
+            }
+            Line hd = commentLine("", d.defaultEol);
+            hd.text = where.section.strip;
+            ins = pre ~ hd ~ ins;
+        }
+    }
+    insertAt(d, pos, ins);
+    renumber(d);
     foreach (ref l; d.lines)
-        phys += l.text.length ? 1 + l.text.count('\n') : 1;
-    n.lineNo = phys + 1;
-    d.lines ~= n;
-    ch ~= Change(Change.Op.added, key, n.lineNo);
+        if (l.kind == Kind.entry && l.key == key)
+            ch ~= Change(Change.Op.added, key, l.lineNo);
+    return ch;
+}
+
+/// Add or replace the comment block attached to KEY (every occurrence).
+Change[] setComment(ref Document d, string key, string text)
+{
+    Change[] ch;
+    auto f = d.find(key);
+    foreach_reverse (idx; f)
+    {
+        auto s = attachedStart(d, idx);
+        auto ins = commentLines(text, d.defaultEol);
+        bool same = idx - s == ins.length;
+        if (same)
+            foreach (i; 0 .. ins.length)
+                if (d.lines[s + i].text != ins[i].text) { same = false; break; }
+        if (same) continue;
+        d.lines = d.lines[0 .. s] ~ ins ~ d.lines[idx .. $];
+        ch ~= Change(Change.Op.commented, key, 0);
+    }
+    renumber(d);
+    foreach (ref c; ch)
+        foreach (ref l; d.lines)
+            if (l.kind == Kind.entry && l.key == key) { c.lineNo = l.lineNo; break; }
     return ch;
 }
 
@@ -369,23 +520,28 @@ private size_t count(string s, char c)
     return n;
 }
 
-/// Remove every occurrence of KEY.
-Change[] unsetKey(ref Document d, string key)
+/// Remove every occurrence of KEY. The attached comment block stays unless withComment.
+Change[] unsetKey(ref Document d, string key, bool withComment = false)
 {
     Change[] ch;
-    Line[] kept;
-    foreach (ref l; d.lines)
+    bool[] drop = new bool[d.lines.length];
+    foreach (idx; d.find(key))
     {
-        if (l.kind == Kind.entry && l.key == key)
-            ch ~= Change(Change.Op.removed, key, l.lineNo);
-        else
-            kept ~= l;
+        ch ~= Change(Change.Op.removed, key, d.lines[idx].lineNo);
+        drop[idx] = true;
+        if (withComment)
+            foreach (i; attachedStart(d, idx) .. idx)
+                drop[i] = true;
     }
-    // removing the final line must not leave a dangling terminator change
-    if (ch.length && kept.length && d.lines[$ - 1].eol == "" && kept[$ - 1].eol != "")
-        if (d.lines[$ - 1].kind == Kind.entry && d.lines[$ - 1].key == key)
-            kept[$ - 1].eol = "";
+    if (!ch.length) return ch;
+    bool lastHadNoEol = d.lines[$ - 1].eol == "";
+    Line[] kept;
+    foreach (i, ref l; d.lines)
+        if (!drop[i]) kept ~= l;
+    if (lastHadNoEol && kept.length)
+        kept[$ - 1].eol = "";
     d.lines = kept;
+    renumber(d);
     return ch;
 }
 
@@ -469,4 +625,54 @@ unittest // unset removes all occurrences and keeps the rest
     auto e = parse("A=1\nB=2");
     unsetKey(e, "B");
     assert(e.serialize() == "A=1");
+}
+
+unittest // comments: inline and full-line comments survive edits byte-for-byte
+{
+    auto src = "# == Database ==\n# primary connection\nDB_URL=postgres://x # inline note\n\n# == Mail ==\nMAIL_FROM=a@b\n";
+    auto d = parse(src);
+    setValue(d, "DB_URL", "postgres://y");
+    assert(d.serialize() == "# == Database ==\n# primary connection\nDB_URL=postgres://y # inline note\n\n# == Mail ==\nMAIL_FROM=a@b\n");
+    assert(attachedComment(d, 2) == ["== Database ==", "primary connection"]);
+    assert(inlineComment(d.lines[2]) == "inline note");
+}
+
+unittest // unset keeps the attached comment unless asked
+{
+    auto src = "# keep header\n\n# about A\nA=1\nB=2\n";
+    auto d = parse(src);
+    unsetKey(d, "A");
+    assert(d.serialize() == "# keep header\n\n# about A\nB=2\n");
+    auto e = parse(src);
+    unsetKey(e, "A", true);
+    assert(e.serialize() == "# keep header\n\nB=2\n");
+}
+
+unittest // set comment adds or replaces the attached block
+{
+    auto d = parse("X=0\n\n# old one\n# old two\nA=1\n");
+    setComment(d, "A", "new note");
+    assert(d.serialize() == "X=0\n\n# new note\nA=1\n");
+    setComment(d, "X", "first\nsecond");
+    assert(d.serialize() == "# first\n# second\nX=0\n\n# new note\nA=1\n");
+    auto c = parse("A=1\r\n");
+    setComment(c, "A", "crlf");
+    assert(c.serialize() == "# crlf\r\nA=1\r\n");
+}
+
+unittest // placement: --after and --section
+{
+    auto src = "# == App ==\nA=1\nB=2\n\n# == Mail ==\nM=1\n";
+    auto d = parse(src);
+    setValue(d, "A2", "x", false, Placement("A", null));
+    assert(d.serialize() == "# == App ==\nA=1\nA2=x\nB=2\n\n# == Mail ==\nM=1\n");
+    auto e = parse(src);
+    setValue(e, "C", "3", false, Placement(null, "# == App =="));
+    assert(e.serialize() == "# == App ==\nA=1\nB=2\nC=3\n\n# == Mail ==\nM=1\n");
+    auto f = parse(src);
+    setValue(f, "M2", "2", false, Placement(null, "# == Mail =="));
+    assert(f.serialize() == src ~ "M2=2\n");
+    auto g = parse("A=1");
+    setValue(g, "N", "1", false, Placement(null, "# == New =="));
+    assert(g.serialize() == "A=1\n\n# == New ==\nN=1");
 }
