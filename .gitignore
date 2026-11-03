@@ -16,3 +16,6 @@
 !installer/*.wxs
 !changelog-details/**/*.adoc
 !.github/**/*.yml
+!packaging/**/*.sh
+!packaging/**/*.yaml
+!packaging/**/*.md

@@ -4,6 +4,11 @@
 
 == 2026-11-02
 
+=== Installer packages, v0.2.1
+* macOS: Homebrew formula (`brew install dev-centr/tap/envsafe`) and an unsigned `.pkg` installer.
+* Linux: `.deb` and `.rpm` for x64 and arm64; archives kept for packagers.
+* Details: link:changelog-details/2026-11-02%20-%20packages.adoc[2026-11-02 - Installer packages]
+
 === MCP server, comments and upsert flags, v0.2.0
 * `envsafe mcp`: an MCP server over stdio with `envsafe_set`, `envsafe_unset`, `envsafe_list` and `envsafe_validate`; values come from `from_env` or `from_file`, never inline.
 * Attached comments: `set --comment`, `unset --with-comment`, and `list` shows each key's comments.

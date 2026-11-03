@@ -7,6 +7,9 @@ on:
 permissions:
   contents: write
 
+env:
+  NFPM_VERSION: 2.48.0
+
 jobs:
   build:
     strategy:
@@ -17,8 +20,12 @@ jobs:
             runs-on: windows-latest
           - triplet: linux-x64
             runs-on: ubuntu-latest
+            deb-arch: amd64
+            nfpm-arch: x86_64
           - triplet: linux-arm64
             runs-on: ubuntu-24.04-arm
+            deb-arch: arm64
+            nfpm-arch: arm64
           - triplet: macos-arm64
             runs-on: macos-14
     runs-on: ${{ matrix.runs-on }}
@@ -62,6 +69,43 @@ jobs:
           dotnet tool install --global wix --version 5.0.2
           wix build installer/envsafe.wxs -arch x64 -d "Version=$v" -d "ExePath=bin/envsafe.exe" -o "dist/envsafe-$v-${{ matrix.triplet }}.msi"
           rm -f dist/*.wixpdb
+      - name: Build .deb and .rpm
+        if: runner.os == 'Linux'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          curl -fsSL -o /tmp/nfpm.tgz "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${{ matrix.nfpm-arch }}.tar.gz"
+          tar -xzf /tmp/nfpm.tgz -C /tmp nfpm
+          export VERSION="$v" ARCH="${{ matrix.deb-arch }}"
+          /tmp/nfpm package -f packaging/nfpm.yaml -p deb -t "dist/envsafe_${v}_${{ matrix.deb-arch }}.deb"
+          /tmp/nfpm package -f packaging/nfpm.yaml -p rpm -t "dist/envsafe-${v}-1.${{ matrix.nfpm-arch == 'x86_64' && 'x86_64' || 'aarch64' }}.rpm"
+      - name: Smoke-install .deb
+        if: runner.os == 'Linux'
+        run: |
+          sudo dpkg -i dist/*.deb
+          test "$(command -v envsafe)" = /usr/bin/envsafe
+          envsafe --version
+          sudo dpkg -r envsafe
+          ! command -v envsafe
+      - name: Build universal binary and .pkg
+        if: runner.os == 'macOS'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          cp bin/envsafe /tmp/envsafe-arm64
+          # Intel slice is cross-compiled on the arm64 runner (house rule: no Intel Mac runners).
+          if dub build -b release --arch=x86_64-apple-macos --force; then
+            cp bin/envsafe /tmp/envsafe-x86_64
+            lipo -create /tmp/envsafe-arm64 /tmp/envsafe-x86_64 -output /tmp/envsafe
+            lipo -info /tmp/envsafe
+            arch -x86_64 /tmp/envsafe --version || echo "::warning::x86_64 slice did not run under Rosetta"
+            tar -czf "dist/envsafe-$v-macos-universal.tar.gz" -C /tmp envsafe -C "$GITHUB_WORKSPACE" README.md LICENSE CHANGELOG.adoc
+            pkg="dist/envsafe-$v-macos-universal.pkg"
+          else
+            echo "::warning::x86_64 cross-build failed; shipping an arm64-only .pkg"
+            cp /tmp/envsafe-arm64 /tmp/envsafe
+            pkg="dist/envsafe-$v-macos-arm64.pkg"
+          fi
+          bash packaging/macos/build-pkg.sh /tmp/envsafe "$v" "$pkg"
+          pkgutil --payload-files "$pkg" | grep -q 'usr/local/bin/envsafe'
       - uses: actions/upload-artifact@v7
         with:
           name: envsafe-${{ matrix.triplet }}
@@ -84,5 +128,25 @@ jobs:
           body: |
             See [CHANGELOG.adoc](https://github.com/dev-centr/envsafe/blob/${{ github.ref_name }}/CHANGELOG.adoc).
 
-            Windows: run the `.msi` (adds `envsafe` to PATH; open a new terminal afterwards). Other platforms: unpack the archive and put `envsafe` on your PATH.
+            - **macOS:** `brew install dev-centr/tap/envsafe`, or run the `.pkg` (installs to `/usr/local/bin`). The `.pkg` and binaries are **not signed or notarized**; on first open, right-click the `.pkg` and choose Open.
+            - **Debian/Ubuntu:** `sudo apt install ./envsafe_<version>_<arch>.deb`
+            - **Fedora/RHEL:** `sudo dnf install ./envsafe-<version>-1.<arch>.rpm`
+            - **Windows:** run the `.msi` (adds `envsafe` to PATH; open a new terminal afterwards). The MSI is not code-signed.
+            - **Packagers:** the `.tar.gz` / `.zip` archives hold the bare binary; `SHA256SUMS.txt` covers every asset.
           files: dist/*
+      - name: Bump Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set; bump dev-centr/homebrew-tap by hand (see packaging/homebrew/README.md)"
+            exit 0
+          fi
+          v="${GITHUB_REF_NAME#v}"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/dev-centr/homebrew-tap.git" /tmp/tap
+          bash packaging/homebrew/render-formula.sh "$v" dist/SHA256SUMS.txt > /tmp/tap/Formula/envsafe.rb
+          cd /tmp/tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/envsafe.rb
+          git diff --cached --quiet || { git commit -m "envsafe $v"; git push origin HEAD; }

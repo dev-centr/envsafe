@@ -1,0 +1,25 @@
+# nfpm config for the envsafe .deb and .rpm. CI sets VERSION and ARCH (amd64|arm64); binary comes from ./bin/envsafe.
+name: envsafe
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Ryan Johnson <ryan.johnson.code@gmail.com>
+description: |
+  Secret-safe editing of .env files for people and AI agents.
+  Values come from pipes or environment variables and are never printed.
+vendor: Dev-Centr
+homepage: https://github.com/dev-centr/envsafe
+license: MIT
+contents:
+  - src: ./bin/envsafe
+    dst: /usr/bin/envsafe
+    file_info:
+      mode: 0755
+  - src: ./README.md
+    dst: /usr/share/doc/envsafe/README.md
+  - src: ./CHANGELOG.adoc
+    dst: /usr/share/doc/envsafe/CHANGELOG.adoc
+  - src: ./LICENSE
+    dst: /usr/share/licenses/envsafe/LICENSE

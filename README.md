@@ -46,8 +46,12 @@ Agents and scripts often need to add or rotate a key in a `.env` file. The usual
 
 ## Install
 
+- **macOS:** `brew install dev-centr/tap/envsafe`. Or download `envsafe-<version>-macos-universal.pkg` (or `-macos-arm64.pkg`) from [Releases](https://github.com/dev-centr/envsafe/releases) and run it; it installs to `/usr/local/bin`. The `.pkg` is not signed yet, so right-click it and choose **Open** the first time.
+- **Linux (Homebrew):** `brew install dev-centr/tap/envsafe`.
+- **Debian / Ubuntu:** download `envsafe_<version>_amd64.deb` (or `_arm64.deb`) and run `sudo apt install ./envsafe_<version>_amd64.deb`.
+- **Fedora / RHEL / openSUSE:** download `envsafe-<version>-1.x86_64.rpm` (or `.aarch64.rpm`) and run `sudo dnf install ./envsafe-<version>-1.x86_64.rpm`.
 - **Windows:** download `envsafe-<version>-windows-x64.msi` from [Releases](https://github.com/dev-centr/envsafe/releases) and run it. It installs to `Program Files\envsafe` and adds that folder to PATH (open a new terminal afterwards).
-- **Linux / macOS:** download the `.tar.gz` for your platform, unpack it, and put `envsafe` somewhere on PATH.
+- **Packagers:** each release also carries the bare binary as `.tar.gz` (Linux x64/arm64, macOS) and `.zip` (Windows), plus `SHA256SUMS.txt`.
 - **From source:** install [LDC](https://github.com/ldc-developers/ldc) and run `dub build -b release` (binary in `bin/`).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
