@@ -298,9 +298,12 @@ private string doubleQuote(string v)
 }
 
 /// Encode a value, keeping the existing quote style (0 = unquoted) when it can hold the value.
+/// A value containing `$` or a backtick goes in single quotes when it can, because many loaders
+/// (Docker Compose, dotenv-expand, shells that `source` the file) expand those inside double quotes.
 string encodeValue(string v, char style)
 {
-    if (style == '\'' && !v.canFind('\'') && !v.canFind('\n') && !v.canFind('\r'))
+    immutable singleOk = !v.canFind('\'') && !v.canFind('\n') && !v.canFind('\r');
+    if (singleOk && (style == '\'' || v.canFind('$') || v.canFind('`')))
         return "'" ~ v ~ "'";
     if (style == 0 && safeUnquoted(v))
         return v;
@@ -616,6 +619,34 @@ unittest // values needing quotes get double quotes and escapes
     assert(decodeValue(again.lines[0]) == "has \"quote\"\nand newline");
 }
 
+unittest // regression: values with $ or ` are single-quoted so loaders do not expand them
+{
+    auto d = parse("A=1\nB=\"x\"\n");
+    setValue(d, "A", "pa$$word`x`");
+    setValue(d, "B", "${HOME}");
+    setValue(d, "C", "$PATH");
+    assert(d.serialize() == "A='pa$$word`x`'\nB='${HOME}'\nC='$PATH'\n");
+    auto again = parse(d.serialize());
+    assert(decodeValue(again.lines[0]) == "pa$$word`x`");
+    // a ' or newline forces double quotes; the value still round-trips
+    auto e = parse("A=1\n");
+    setValue(e, "A", "it's $x");
+    assert(decodeValue(parse(e.serialize()).lines[0]) == "it's $x");
+}
+
+unittest // regression: tricky files round-trip untouched lines byte-for-byte
+{
+    enum src = "A=1\r\nML=\"l1\nl2 # not a comment\nl3\"\nURL=postgres://u:p@h/db?x=1&y=2\nexport E=1\n"
+        ~ "H=\"x # y\"\nS='p#q' # real\nN=h\u00e9llo \U0001F30D\nD=1\nD=2\nZ=";
+    auto d = parse(src);
+    setValue(d, "NEW", "v");
+    unsetKey(d, "NEW");
+    assert(d.serialize() == src);
+    auto m = parse(src);
+    setValue(m, "URL", "v");
+    import std.array : replace;
+    assert(m.serialize() == src.replace("URL=postgres://u:p@h/db?x=1&y=2", "URL=v"));
+}
 unittest // unset removes all occurrences and keeps the rest
 {
     auto d = parse("# c\nA=1\nB=2\nA=3\n");

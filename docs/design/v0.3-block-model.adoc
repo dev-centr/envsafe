@@ -1,0 +1,208 @@
+= envsafe v0.3 design: block model, explicit comment attachment, secret-masked comments
+:toc:
+:status: draft (not implemented)
+
+== Problem
+
+Up to v0.2, envsafe treats a `.env` file as lines and guesses which comment belongs to a key: comment lines directly above it count as attached. That guess breaks in common layouts:
+
+* A comment can describe the key *below* it, the key *above* it, a whole section, or nothing.
+* Blank lines separate groups in one file and mean nothing in the next.
+* Comments sometimes hold real secrets, such as an old key kept "just in case" or a pasted example token. Today an agent either sees that text (a leak) or cannot edit the comment at all.
+
+v0.3 makes structure explicit. The file becomes a chain of typed blocks with stable IDs. Attachment is stored as data instead of being inferred at every edit. Secrets inside comments are masked so callers can edit the text around them.
+
+== Block model
+
+Parsing tokenizes the file into an ordered chain of blocks. Concatenating the raw bytes of every block, in order, reproduces the file byte for byte, including BOM state, line endings, and a missing final newline.
+
+[cols="1,3"]
+|===
+|Block type |Contents
+
+|`key` |One assignment, including multi-line quoted values, `export`, and any inline comment. The value is never exposed.
+|`comment` |A run of consecutive full-line `#` comments.
+|`blank` |A run of one or more empty or whitespace-only lines.
+|`section` |A comment line that acts as a heading. It is marked explicitly or suggested by a heuristic (for example `# ---- Database ----` or `## Database`).
+|`opaque` |Anything that does not parse. It is kept verbatim, can be moved but never edited, and is flagged by `validate`.
+|===
+
+=== Stable block IDs
+
+* Each block gets an ID such as `b7` when it is first seen. IDs stay stable across edits within a session, and across sessions through a sidecar described below.
+* A `key` block has a natural alias (`key:API_KEY`, or `key:API_KEY#2` for a duplicate). Other blocks have only their ID.
+* Every response carries a content hash of the file. A mutating call must pass the hash it last saw (`ifMatch`). If the file changed underneath, the call fails instead of editing the wrong block. This is optimistic concurrency, as with HTTP ETags.
+
+ID persistence across processes is an open question; see below. The default is to derive IDs from position plus content within one read-modify-write cycle and to rely on `ifMatch`.
+
+== Comment attachment is explicit
+
+No heuristic can tell what a comment refers to, so attachment is metadata:
+
+* `attach(commentId, keyId, side)`, where `side` is `above` or `below`.
+* `detach(commentId)` leaves the comment free-standing, or tied only to its section.
+* A comment block attaches to at most one key. A section attaches to the blocks up to the next section.
+
+The v0.2 rule, "the comment directly above with no blank line between", stays as a *suggestion*. `blocks list` reports it as `suggestedAttachment` with a reason such as `adjacent-above`. Only an explicit `attach` makes it binding.
+
+Attachment changes what operations do:
+
+* `move` on a key moves its attached comments with it.
+* `delete` on a key with `withAttached: true` removes them as well.
+* `set --comment` writes into the attached comment block.
+
+=== Where attachment is stored
+
+Pure `.env` syntax has no place for this metadata. The options are:
+
+. A *sidecar* file, `.env.envsafe.json`, holding block IDs, attachments and section marks keyed by content hashes. The `.env` file stays untouched. The sidecar must be gitignored alongside `.env`, and committed alongside `.env.example`.
+. *Inline markers* in comments, such as `# @envsafe attach=below`. This is self-contained but visible to every reader, and it changes the file.
+. *Layout as the encoding.* Attachment is expressed through blank lines (see Tidy below), and the heuristic then reads it correctly. No metadata is stored.
+
+The proposed default is option 3, backed by option 1. Agents tidy blank lines until the adjacency heuristic and the intended attachment agree. The sidecar is only for cases layout cannot express, such as a comment below its key.
+
+== Operations (CLI and MCP)
+
+[cols="1,3"]
+|===
+|Operation |Behavior
+
+|`blocks list` |Returns the safe view: an ordered list of `{id, type, keyName?, hasValue?, commentText?, suggestedAttachment?, attachedTo?, locked?}` plus the file hash. There are no values; comment text is masked (next section).
+|`blocks get ID` |Returns one block in the safe view.
+|`blocks move ID --before/--after ID2` |Moves a block, carrying its attached blocks with it.
+|`blocks insert --before/--after ID TYPE` |Inserts a `blank` (with a line count), `comment` (with text), or `section`. Keys are still added through `set`, so values only ever arrive by pipe, environment variable, or file.
+|`blocks delete ID` |Deletes a non-key block. A key block is deleted through `unset`.
+|`blocks attach ID --to KEY --side above/below` / `blocks detach ID` |Sets or clears attachment.
+|`blocks edit ID --text TEXT` |Edits a comment's text, keeping any `{{secret:N}}` placeholders.
+|===
+
+Every mutating operation:
+
+* supports `--dry-run`, which prints a redacted diff;
+* requires `ifMatch`;
+* is atomic, using the same write path as v0.2;
+* is exposed as an MCP tool (`envsafe_blocks_list`, `envsafe_blocks_move`, and so on).
+
+A `batch` call applies several operations against one hash, with all-or-nothing semantics.
+
+== Secrets in comments
+
+=== Detection
+
+Detection is layered, and any layer can flag a span inside a comment:
+
+. *Known token formats*, such as `ghp_`, `github_pat_`, `sk-`, `xox[bpas]-`, `AKIA`, `AIza`, `-----BEGIN ... PRIVATE KEY-----` and JWT shapes. Use a vendored, versioned subset of gitleaks-style rules so updates are deliberate.
+. *Assignment patterns*: `KEY=value` or `key: value` inside a comment, where the value part is masked. This catches commented-out old values.
+. *Same-file values*: any comment substring equal to a value in the same file. This is checked in process and never reported.
+. *High entropy*: Shannon entropy above a threshold on tokens of at least 20 characters from a base64, hex, or URL-safe alphabet. This layer has the most false positives (see below).
+
+=== Masked view
+
+In the safe view each detected span becomes `{{secret:N}}`, numbered per block. Example:
+
+----
+# old key, rotated 2026-10: {{secret:1}} (do not reuse)
+----
+
+* A caller can edit the text around a placeholder, including moving or deleting the whole comment.
+* On write, envsafe restores the original bytes for each `{{secret:N}}` that is still present.
+* An edit that drops a placeholder deletes that secret. This is allowed, but the dry run reports it as `removes secret 1`.
+* An edit that introduces a new placeholder, or adds text that the detectors flag, is refused. Callers cannot write secrets into comments through this path.
+
+=== Locked blocks
+
+If envsafe can flag secret material but cannot isolate it into spans, the block is *locked*. Examples: a multi-line private key in comments, or a span that overlaps the comment syntax. Locked blocks:
+
+* appear in the safe view as `locked: true` with a reason and no text;
+* can be moved as a unit, deleted, or attached and detached;
+* can never be edited.
+
+== Tidy workflow (agents insert and remove blank blocks)
+
+Agents may insert and remove `blank` blocks to make attachment unambiguous and the file readable. They work only from the safe view: key names, masked comment text, block types, and suggested attachments. They never see values.
+
+. *Inspect.* Run `blocks list` and read the safe view and the file hash.
+. *Propose a layout.* For each comment, decide what it describes. Express the decision with blank lines: no blank between a comment and its key, one blank between groups, and a section header followed by its group. Use `attach` only where layout cannot say it, such as a comment below its key. Optionally reorder whole groups.
+. *Dry run.* Send the proposal as one `batch` with `--dry-run`. The redacted diff shows only blank-line, comment, and order changes; values never appear. Run `validate` on the result and confirm there are no new duplicates, every key is still present, and every placeholder is still bound.
+. *Apply.* Run the same `batch` with `ifMatch` set to the inspected hash. The write is atomic. Re-running `blocks list` should show each `suggestedAttachment` equal to its intended attachment.
+
+Invariants:
+
+* tidy never changes a key block's bytes;
+* the multiset of key names is unchanged;
+* whitespace is the only text it adds or removes, apart from explicit comment edits.
+
+`envsafe tidy --suggest` can also emit a proposed batch itself (blank before each section, none between a comment and its key) for an agent or a person to review.
+
+== False positives
+
+False positives are expected, mainly from the entropy layer and from hashes or UUIDs in comments. Handling:
+
+* *Masking is the safe default.* A false positive costs readability, never confidentiality.
+* *Allow by fingerprint.* `envsafe allow-comment ID N` records a salted hash of the span in the sidecar, never the text, as "not a secret". This needs a human or an explicit flag; MCP callers cannot allow spans unless the server was started with `--allow-unmask`. An agent cannot unmask material by deciding it is harmless.
+* *Inline pragma.* `# envsafe:allow` on a comment line exempts the entropy layer only. Known-format and same-file-value hits stay masked.
+* *Tunable layers.* Use `--secret-detect=formats,assign,values` to drop the entropy layer for a file or project.
+* *Report, don't block.* `validate` lists masked spans by block ID and detector name so a person can review them.
+
+== Compatibility
+
+* v0.2 commands keep working on top of the block model. `set --comment` and `unset --with-comment` map to attach plus edit, and to delete with `withAttached`.
+* The file format is unchanged. The sidecar is optional.
+* The v0.2 byte-for-byte guarantee becomes a hard test: parsing and serializing every block chain must reproduce the file exactly.
+
+== Open questions
+
+. Should block IDs persist across processes (sidecar) or exist only per session (position plus content hash plus `ifMatch`)? The sidecar adds a file to manage and gitignore.
+. When a heuristic `section` block is promoted to a real section, does it need explicit marking?
+. Is attachment many-to-one (several comments on one key) or exactly one comment block per key?
+. A comment below a key: is `side: below` worth the complexity, or should tidy just move it above?
+. Should the vendored detection rules come from gitleaks (MIT) as a pinned snapshot, and how will they be updated?
+. Entropy thresholds per alphabet: what false-positive and false-negative rate is acceptable on real files? Measure with a synthetic corpus, never real values.
+. Can `{{secret:N}}` collide with literal text in a comment? Probably escape it as `{{{{`.
+. Multi-line values that contain `#`: the block model already treats them as one key block. Confirm the tokenizer agrees with docker compose, python-dotenv, and dotenv (node) on every edge case in the test corpus.
+. Does MCP `batch` need a size limit or a rate limit?
+
+== Non-goals
+
+* Reading or showing values, ever, including in tidy or dry-run output.
+* Rewriting a whole file into a canonical style. Tidy is opt-in and limited to whitespace.
+* Encrypting values. That is a separate tool's job (sops, dotenvx).
+
+== Future direction: secret-redacting stream filter
+
+The comment detectors are useful beyond `.env` files. An agent's biggest leak path is usually command output, such as `env`, `printenv`, a verbose deploy log, or `cat` on a config file, rather than a file it edits on purpose.
+
+=== Shape
+
+. *Shared D library* (working name `secretscan`). The detection layers above (known formats, assignment patterns, supplied literal values, entropy) move out of envsafe into a library that envsafe, the wrapper, and the proxy all depend on. Under skill `library-registry-choice` it is published to the DUB registry, and envsafe depends on it by version, not by path. One rule set, versioned once, avoids three detectors drifting apart.
+. *CLI wrapper*: `secretscan run -- <command> [args]`. It runs the command and redacts its stdout and stderr as a stream, keeping the exit code. Matches become `[REDACTED:<rule>]`. Literal values can be supplied safely through `--values-from-env NAME,...` or `--values-from-file`, so exact secrets the caller knows about are always caught. Values never arrive as arguments.
+. *MCP proxy*: `secretscan mcp-proxy -- <server command>`. It sits between an MCP client and a server and redacts every tool result, and resource content where useful, before forwarding. Requests pass through unchanged.
+
+=== Streaming and chunk-split secrets
+
+Output arrives in arbitrary chunks, so a token can be split across two reads. The filter keeps a *tail holdback* of the last `L - 1` bytes, where `L` is the longest bounded match length across the rules (for example about 200 bytes; PEM blocks are handled as a stateful begin/end pair). It emits everything before the holdback, and flushes the holdback at a newline, at end of stream, or after a short idle timeout (for example 50 ms), so interactive prompts still show up.
+
+=== Placement limits
+
+A filter only helps if it sits *before* the agent's context:
+
+* *Wrapper:* the redacted stream reaches the model only when the agent's commands go through `secretscan run`. Anything the harness runs directly bypasses it. Places that can enforce it: a shell or terminal profile the harness actually uses, a harness hook or allow-list that rewrites commands, or an explicit rule. The rule alone is advisory, because an agent can forget it.
+* *MCP proxy:* enforceable only when the client config launches the server through the proxy. It cannot cover tools built into the harness (file reads, its own shell) or servers configured elsewhere.
+* Neither covers files the agent reads with a harness read tool. Those still rely on not reading secret files and on envsafe-style safe views.
+
+=== Performance
+
+* Literal and prefix rules are cheap. Compile them into one automaton or one combined regex, scan once per chunk, and expect throughput far above typical command output.
+* Entropy scoring is per token and linear, also cheap.
+* The real latency cost is the streaming *holdback*: output appears a little late, and the idle timeout trades latency against split-secret safety.
+* The real *product* cost is false positives: hashes, UUIDs, base64 assets, and commit SHAs turned into `[REDACTED]` that the agent then cannot act on. Mitigations are the same as above: entropy is opt-in, rules are tunable, and an allow-list can match by fingerprint. Show counts per rule (`3 redactions: github-pat x1, entropy x2`) on stderr so a person can tune.
+* Before shipping, measure on a synthetic corpus (never real secrets): throughput in MB/s, added p50 and p99 latency per line in interactive use, and false-positive rate per rule on real-world non-secret output such as git logs, npm and dub logs, and JSON API responses.
+
+=== Alignment with existing agent rules
+
+These tools are a second line of defence, not a replacement for the existing rules:
+
+* Skill `secret-pipe` stays primary: values live only in variables and pipes, and agents print only ids, booleans, and exit codes. The wrapper backs that up for when a command echoes something unexpectedly. It is not permission to print values.
+* The agent-workspace rules (`general/agent-workspace-migrate.md`, `scratch/.../quarantine-secrets/`) cover secret *files* found on disk. Those get moved and quarantined, never piped through a filter and shown. The filter adds nothing there.
+* Skill `ship-app` already requires CLI debug dumps to be redacted. The shared library would be the natural implementation for DevCentr CLIs.
+* No agent-rules skill defines a redaction workflow yet. When the library exists, add a short skill (or a section in `secret-pipe`) saying when to wrap commands. Do not write a parallel rule set.
