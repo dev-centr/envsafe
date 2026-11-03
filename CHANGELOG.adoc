@@ -1,0 +1,12 @@
+= Changelog
+:toc:
+:toclevels: 3
+
+== 2026-11-02
+
+=== First release, v0.1.0
+* `set` (value from `--stdin` or `--from-env`), `unset`, `list`, and `validate` commands.
+* Lossless editing: comments, blank lines, order, quoting, `export` prefixes, and CRLF/LF endings survive edits.
+* Redacted `--dry-run` diffs, atomic writes, optional `.bak`, no BOM.
+* Windows MSI that adds `envsafe` to PATH; Linux x64/arm64 and macOS arm64 archives.
+* Details: link:changelog-details/2026-11-02%20-%20first-release.adoc[2026-11-02 - First release]

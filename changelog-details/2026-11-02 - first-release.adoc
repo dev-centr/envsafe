@@ -1,0 +1,12 @@
+= 2026-11-02
+
+== First release, v0.1.0
+
+envsafe 0.1.0 is the first public build of a small CLI for editing `.env` files from scripts and AI agents without exposing secret values.
+
+* *Commands:* `set KEY --stdin`, `set KEY --from-env NAME`, `unset KEY...`, `list` (names only; `--show-masked` and `--json`), `validate` (syntax, duplicate keys, optional `--schema` registry).
+* *Secrets stay out of sight:* values are refused as command-line arguments and never printed; dry runs and diagnostics show key names, line numbers and codes only.
+* *Lossless edits:* each line keeps its original text and terminator, so untouched lines stay byte-identical. Existing quote styles are kept when they can hold the new value.
+* *Safe writes:* temp file in the same folder, then rename. `--backup` keeps `.env.bak`. A leading BOM is dropped on write.
+* *Schema files:* an `environment-variables.adoc` / `ENV-VARIABLES.md` registry table (Required = Yes), or a `.env.example` (an entry commented `required` is required).
+* *Packaging:* Windows x64 MSI (WiX v5) that adds the install folder to PATH, plus Windows x64 zip, Linux x64/arm64 and macOS arm64 tarballs.

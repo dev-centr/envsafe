@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - name: Unit tests
+        run: dub test
+      - name: Build
+        run: dub build -b release
+      - name: Smoke test (secret pipe)
+        shell: bash
+        run: tests/smoke.sh ./bin/envsafe

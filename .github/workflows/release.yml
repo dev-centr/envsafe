@@ -1,0 +1,85 @@
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triplet: windows-x64
+            runs-on: windows-latest
+          - triplet: linux-x64
+            runs-on: ubuntu-latest
+          - triplet: linux-arm64
+            runs-on: ubuntu-24.04-arm
+          - triplet: macos-arm64
+            runs-on: macos-14
+    runs-on: ${{ matrix.runs-on }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - name: Stamp build id
+        run: printf '%s\n' "${GITHUB_SHA::12}" > views/build-id.txt
+      - name: Unit tests
+        run: dub test
+      - name: Build
+        run: dub build -b release
+      - name: Check version matches tag
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got="$(./bin/envsafe --version | awk '{print $2}')"
+          echo "tag $want, binary $got"
+          [ "$want" = "$got" ]
+      - name: Smoke test (secret pipe)
+        run: tests/smoke.sh ./bin/envsafe
+      - name: Package archive
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            7z a "dist/envsafe-$v-${{ matrix.triplet }}.zip" ./bin/envsafe.exe README.md LICENSE CHANGELOG.adoc
+          else
+            tar -czf "dist/envsafe-$v-${{ matrix.triplet }}.tar.gz" -C bin envsafe -C .. README.md LICENSE CHANGELOG.adoc
+          fi
+      - name: Build MSI
+        if: runner.os == 'Windows'
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          dotnet tool install --global wix --version 5.0.2
+          wix build installer/envsafe.wxs -arch x64 -d "Version=$v" -d "ExePath=bin/envsafe.exe" -o "dist/envsafe-$v-${{ matrix.triplet }}.msi"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: envsafe-${{ matrix.triplet }}
+          path: dist/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: envsafe ${{ github.ref_name }}
+          body: |
+            See [CHANGELOG.adoc](https://github.com/dev-centr/envsafe/blob/${{ github.ref_name }}/CHANGELOG.adoc).
+
+            Windows: run the `.msi` (adds `envsafe` to PATH; open a new terminal afterwards). Other platforms: unpack the archive and put `envsafe` on your PATH.
+          files: dist/*
